@@ -1,4 +1,4 @@
-name: decode-images
+name: build-images
 on:
   push:
     branches: [main]
@@ -6,19 +6,38 @@ on:
   workflow_dispatch:
 permissions:
   contents: write
+concurrency:
+  group: build-images
+  cancel-in-progress: false
 jobs:
-  decode:
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Decode base64 files in incoming/ to images/
+      - name: Install SVG renderer and Korean fonts (only if SVG present)
+        run: |
+          if ls incoming/*.svg >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq librsvg2-bin fonts-noto-cjk >/dev/null
+            fc-cache -f >/dev/null
+          fi
+      - name: Build images
         run: |
           shopt -s nullglob
-          mkdir -p images
+          mkdir -p images sources
           n=0
+          # 1) SVG -> PNG (recommended: text-only upload, byte-safe)
+          for f in incoming/*.svg; do
+            name="$(basename "$f" .svg)"
+            rsvg-convert -f png -o "images/$name.png" "$f"
+            git mv -f "$f" "sources/$name.svg"
+            git add "images/$name.png"
+            n=$((n+1))
+          done
+          # 2) base64 -> binary (small files only; verify sha256 after download)
           for f in incoming/*.b64; do
             name="$(basename "$f" .b64)"
-            base64 -d "$f" > "images/$name"
+            tr -d ' \r\n' < "$f" | base64 -d > "images/$name"
             git rm -q "$f"
             git add "images/$name"
             n=$((n+1))
@@ -26,6 +45,7 @@ jobs:
           if [ "$n" -gt 0 ]; then
             git config user.name "github-actions[bot]"
             git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
-            git commit -m "Decode $n image(s) from incoming/"
+            git commit -m "Build $n image(s) from incoming/"
+            git pull --rebase -q || true
             git push
           fi
